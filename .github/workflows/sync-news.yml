@@ -16,62 +16,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Download HTML from OneDrive File Link
+      - name: Download HTML from OneDrive Direct Link
         env:
-          SHARED_URL: ${{ secrets.ONEDRIVE_FILE_URL }}
+          DOWNLOAD_URL: ${{ secrets.ONEDRIVE_FILE_URL }}
         run: |
-          python - << 'EOF'
-          import base64
-          import json
-          import os
-          import urllib.request
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "Error: ONEDRIVE_FILE_URL secret is empty."
+            exit 1
+          fi
 
-          raw_url = os.environ.get("SHARED_URL", "").strip()
-          if not raw_url:
-              raise ValueError("Error: ONEDRIVE_FILE_URL secret is empty.")
+          echo "Downloading Daily_News(EL).html from OneDrive..."
+          curl -fSL -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$DOWNLOAD_URL" -o "Daily_News(EL).html"
 
-          print(f"Resolving direct download link for: {raw_url}")
+          # Verify that the downloaded content is valid HTML
+          if ! grep -qiE "<!doctype html|<html" "Daily_News(EL).html"; then
+            echo "Error: Downloaded file does not contain valid HTML."
+            head -n 20 "Daily_News(EL).html"
+            exit 1
+          fi
 
-          # Encode OneDrive share URL to Microsoft share token format (u!...)
-          encoded = base64.b64encode(raw_url.encode("utf-8")).decode("utf-8")
-          share_token = "u!" + encoded.rstrip("=").replace("/", "_").replace("+", "-")
-
-          # Query the OneDrive public share API metadata endpoint
-          api_url = f"https://api.onedrive.com/v1.0/shares/{share_token}/root"
-          req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
-
-          try:
-              with urllib.request.urlopen(req) as resp:
-                  metadata = json.loads(resp.read().decode("utf-8"))
-          except Exception as e:
-              print(f"API query failed ({e}), attempting fallback direct content endpoint...")
-              direct_download_url = f"https://api.onedrive.com/v1.0/shares/{share_token}/root/content"
-          else:
-              direct_download_url = metadata.get("@content.downloadUrl")
-              if not direct_download_url:
-                  direct_download_url = f"https://api.onedrive.com/v1.0/shares/{share_token}/root/content"
-
-          print("Fetching HTML content...")
-          dl_req = urllib.request.Request(direct_download_url, headers={"User-Agent": "Mozilla/5.0"})
-          with urllib.request.urlopen(dl_req) as response:
-              content = response.read().decode("utf-8", errors="ignore")
-
-          # Verify the payload contains actual HTML
-          if "<!doctype html" not in content.lower() and "<html" not in content.lower():
-              print("Response snippet:", content[:300])
-              raise ValueError("Downloaded content is not valid HTML. Ensure the link has public permissions.")
-
-          # Save to repository
-          with open("Daily_News(EL).html", "w", encoding="utf-8") as f:
-              f.write(content)
-
-          print("Successfully downloaded and saved Daily_News(EL).html")
-          EOF
+          echo "Successfully downloaded Daily_News(EL).html."
 
       - name: Update index.html and archive
         run: |
