@@ -2,7 +2,7 @@ name: Sync Daily News from OneDrive
 
 on:
   schedule:
-    # 22:30 UTC = 06:30 AM HKT (Hong Kong Time / UTC+8)
+    # 22:30 UTC = 06:30 AM Hong Kong Time (UTC+8)
     - cron: '30 22 * * *'
   workflow_dispatch:
 
@@ -21,45 +21,56 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download HTML from OneDrive Link
+      - name: Download HTML from OneDrive File Link
         env:
           SHARED_URL: ${{ secrets.ONEDRIVE_FILE_URL }}
         run: |
           python - << 'EOF'
-          import os
           import base64
+          import json
+          import os
           import urllib.request
 
           raw_url = os.environ.get("SHARED_URL", "").strip()
           if not raw_url:
-              raise ValueError("Missing ONEDRIVE_FILE_URL secret.")
+              raise ValueError("Error: ONEDRIVE_FILE_URL secret is empty.")
 
-          # Handle direct download parameters if already an embed/download URL
-          if "download=1" in raw_url:
-              direct_url = raw_url
-          elif raw_url.startswith("https://1drv.ms/"):
-              # Convert Personal OneDrive 1drv.ms sharing link to Graph/OneDrive content API URL
-              encoded = base64.b64encode(raw_url.encode("utf-8")).decode("utf-8")
-              encoded_token = "u!" + encoded.rstrip("=").replace("/", "_").replace("+", "-")
-              direct_url = f"https://api.onedrive.com/v1.0/shares/{encoded_token}/root/content"
-          elif "onedrive.live.com" in raw_url and "resid=" in raw_url:
-              direct_url = raw_url.replace("redir?", "download?").replace("view.aspx?", "download?")
+          print(f"Resolving direct download link for: {raw_url}")
+
+          # Encode OneDrive share URL to Microsoft share token format (u!...)
+          encoded = base64.b64encode(raw_url.encode("utf-8")).decode("utf-8")
+          share_token = "u!" + encoded.rstrip("=").replace("/", "_").replace("+", "-")
+
+          # Query the OneDrive public share API metadata endpoint
+          api_url = f"https://api.onedrive.com/v1.0/shares/{share_token}/root"
+          req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  metadata = json.loads(resp.read().decode("utf-8"))
+          except Exception as e:
+              print(f"API query failed ({e}), attempting fallback direct content endpoint...")
+              direct_download_url = f"https://api.onedrive.com/v1.0/shares/{share_token}/root/content"
           else:
-              direct_url = raw_url + ("&download=1" if "?" in raw_url else "?download=1")
+              direct_download_url = metadata.get("@content.downloadUrl")
+              if not direct_download_url:
+                  direct_download_url = f"https://api.onedrive.com/v1.0/shares/{share_token}/root/content"
 
-          print(f"Fetching from download endpoint...")
-          req = urllib.request.Request(direct_url, headers={"User-Agent": "Mozilla/5.0"})
-          with urllib.request.urlopen(req) as response:
+          print("Fetching HTML content...")
+          dl_req = urllib.request.Request(direct_download_url, headers={"User-Agent": "Mozilla/5.0"})
+          with urllib.request.urlopen(dl_req) as response:
               content = response.read().decode("utf-8", errors="ignore")
 
-          # Verify response contains valid HTML structure
+          # Verify the payload contains actual HTML
           if "<!doctype html" not in content.lower() and "<html" not in content.lower():
-              print("Output preview:", content[:300])
-              raise ValueError("Downloaded file is not valid HTML. Ensure the OneDrive link is public ('Anyone with the link can view').")
+              print("Response snippet:", content[:300])
+              raise ValueError("Downloaded content is not valid HTML. Ensure the link has public permissions.")
 
+          # Save to repository
           with open("Daily_News(EL).html", "w", encoding="utf-8") as f:
               f.write(content)
-          print("Daily_News(EL).html successfully retrieved.")
+
+          print("Successfully downloaded and saved Daily_News(EL).html")
           EOF
 
       - name: Update index.html and archive
